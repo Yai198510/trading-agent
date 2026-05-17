@@ -98,6 +98,47 @@ SYMBOLS = {
     },
 }
 
+# ─── Gestión de riesgo ────────────────────────────────────────────────────
+MAX_RISK_USD = 250  # Riesgo máximo por operación en dólares
+
+def calc_position_size(symbol: str, risk_points: float) -> dict:
+    """
+    Calcula el número de contratos basado en riesgo fijo de $250.
+
+    Fórmula: Contratos = MAX_RISK_USD / (risk_points × point_value)
+
+    Valores por punto:
+      MNQ → $2.00 por punto
+      MES → $5.00 por punto
+      MYM → $0.50 por punto
+
+    Devuelve dict con: contracts (int), risk_per_contract (float),
+                       total_risk (float), point_value (float)
+    """
+    point_value   = SYMBOLS[symbol]["point_value"]
+    risk_per_cont = risk_points * point_value          # $ en riesgo por contrato
+
+    if risk_per_cont <= 0:
+        return {
+            "contracts":        1,
+            "risk_per_contract": 0,
+            "total_risk":       0,
+            "point_value":      point_value,
+            "note":             "Riesgo por contrato inválido, usando 1 contrato mínimo",
+        }
+
+    contracts = int(MAX_RISK_USD / risk_per_cont)      # redondea HACIA ABAJO siempre
+    contracts = max(1, contracts)                       # mínimo 1 contrato
+
+    total_risk = contracts * risk_per_cont             # riesgo real con ese número
+
+    return {
+        "contracts":         contracts,
+        "risk_per_contract": round(risk_per_cont, 2),
+        "total_risk":        round(total_risk, 2),
+        "point_value":       point_value,
+    }
+
 # ─── Estado global (en memoria) ───────────────────────────────────────────
 last_signals: dict[str, dict] = {}   # Última señal enviada por símbolo
 signal_history: list[dict]    = []   # Historial de las últimas 100 señales
@@ -245,31 +286,37 @@ def detect_signal(symbol: str, df: pd.DataFrame) -> Optional[dict]:
         passed = sum(conditions.values())
 
         if passed >= 3:  # al menos 3 de 4 condiciones
-            sl    = round(min(ema9, ema20) - atr * 0.5, 2)
-            rr2   = round(price + (price - sl) * 2, 2)   # R/R 1:2
-            rr3   = round(price + (price - sl) * 3, 2)   # R/R 1:3
-            conf  = "ALTA" if passed == 4 else "MEDIA"
+            sl       = round(min(ema9, ema20) - atr * 0.5, 2)
+            rr2      = round(price + (price - sl) * 2, 2)   # R/R 1:2
+            rr3      = round(price + (price - sl) * 3, 2)   # R/R 1:3
+            conf     = "ALTA" if passed == 4 else "MEDIA"
+            risk_pts = round(price - sl, 2)
+            sizing   = calc_position_size(symbol, risk_pts)
 
             return {
-                "direction":   "LONG 🟢",
-                "direction_raw": "LONG",
-                "symbol":      symbol,
-                "price":       price,
-                "entry":       price,
-                "stop_loss":   sl,
-                "target_1":    rr2,
-                "target_2":    rr3,
-                "risk_points": round(price - sl, 2),
-                "confidence":  conf,
-                "ema9":        round(ema9, 2),
-                "ema20":       round(ema20, 2),
-                "ema200":      round(ema200, 2),
-                "vwap":        round(vwap, 2),
-                "vol_ratio":   round(vol_ratio, 2),
-                "atr":         round(atr, 2),
-                "conditions":  conditions,
+                "direction":         "LONG 🟢",
+                "direction_raw":     "LONG",
+                "symbol":            symbol,
+                "price":             price,
+                "entry":             price,
+                "stop_loss":         sl,
+                "target_1":          rr2,
+                "target_2":          rr3,
+                "risk_points":       risk_pts,
+                "confidence":        conf,
+                "ema9":              round(ema9, 2),
+                "ema20":             round(ema20, 2),
+                "ema200":            round(ema200, 2),
+                "vwap":              round(vwap, 2),
+                "vol_ratio":         round(vol_ratio, 2),
+                "atr":               round(atr, 2),
+                "conditions":        conditions,
                 "conditions_passed": passed,
-                "cross_bar":   prev1.name.isoformat() if hasattr(prev1.name, "isoformat") else str(prev1.name),
+                "cross_bar":         prev1.name.isoformat() if hasattr(prev1.name, "isoformat") else str(prev1.name),
+                "contracts":         sizing["contracts"],
+                "risk_per_contract": sizing["risk_per_contract"],
+                "total_risk":        sizing["total_risk"],
+                "point_value":       sizing["point_value"],
             }
 
     # ── Condiciones SHORT ──────────────────────────────────────────────────
@@ -288,31 +335,37 @@ def detect_signal(symbol: str, df: pd.DataFrame) -> Optional[dict]:
         passed = sum(conditions.values())
 
         if passed >= 3:
-            sl    = round(max(ema9, ema20) + atr * 0.5, 2)
-            rr2   = round(price - (sl - price) * 2, 2)
-            rr3   = round(price - (sl - price) * 3, 2)
-            conf  = "ALTA" if passed == 4 else "MEDIA"
+            sl       = round(max(ema9, ema20) + atr * 0.5, 2)
+            rr2      = round(price - (sl - price) * 2, 2)
+            rr3      = round(price - (sl - price) * 3, 2)
+            conf     = "ALTA" if passed == 4 else "MEDIA"
+            risk_pts = round(sl - price, 2)
+            sizing   = calc_position_size(symbol, risk_pts)
 
             return {
-                "direction":   "SHORT 🔴",
-                "direction_raw": "SHORT",
-                "symbol":      symbol,
-                "price":       price,
-                "entry":       price,
-                "stop_loss":   sl,
-                "target_1":    rr2,
-                "target_2":    rr3,
-                "risk_points": round(sl - price, 2),
-                "confidence":  conf,
-                "ema9":        round(ema9, 2),
-                "ema20":       round(ema20, 2),
-                "ema200":      round(ema200, 2),
-                "vwap":        round(vwap, 2),
-                "vol_ratio":   round(vol_ratio, 2),
-                "atr":         round(atr, 2),
-                "conditions":  conditions,
+                "direction":         "SHORT 🔴",
+                "direction_raw":     "SHORT",
+                "symbol":            symbol,
+                "price":             price,
+                "entry":             price,
+                "stop_loss":         sl,
+                "target_1":          rr2,
+                "target_2":          rr3,
+                "risk_points":       risk_pts,
+                "confidence":        conf,
+                "ema9":              round(ema9, 2),
+                "ema20":             round(ema20, 2),
+                "ema200":            round(ema200, 2),
+                "vwap":              round(vwap, 2),
+                "vol_ratio":         round(vol_ratio, 2),
+                "atr":               round(atr, 2),
+                "conditions":        conditions,
                 "conditions_passed": passed,
-                "cross_bar":   prev1.name.isoformat() if hasattr(prev1.name, "isoformat") else str(prev1.name),
+                "cross_bar":         prev1.name.isoformat() if hasattr(prev1.name, "isoformat") else str(prev1.name),
+                "contracts":         sizing["contracts"],
+                "risk_per_contract": sizing["risk_per_contract"],
+                "total_risk":        sizing["total_risk"],
+                "point_value":       sizing["point_value"],
             }
 
     return None  # Sin señal
@@ -348,6 +401,11 @@ Entrada  : {setup['entry']}
 Stop Loss: {setup['stop_loss']} ({setup['risk_points']} puntos de riesgo)
 Target 1 : {setup['target_1']} (R/R 1:2)
 Target 2 : {setup['target_2']} (R/R 1:3)
+─── Tamaño de posición ($250 riesgo máx) ──
+Contratos: {setup['contracts']}
+Riesgo/contrato: ${setup['risk_per_contract']}
+Riesgo total   : ${setup['total_risk']}
+Valor por punto: ${setup['point_value']}
 ─── Indicadores ───────────────────────
 EMA 9    : {setup['ema9']}
 EMA 20   : {setup['ema20']}
@@ -362,9 +420,10 @@ Cruce detectado en barra: {setup['cross_bar']}
 
 TAREA:
 1. Evalúa si el setup es válido o tiene debilidades importantes.
-2. Si es válido, redacta el mensaje de Telegram (máximo 250 palabras).
+2. Si es válido, redacta el mensaje de Telegram (máximo 280 palabras).
 3. El mensaje debe ser claro, profesional y en español.
 4. Incluye emoji relevantes para mejor lectura en móvil.
+5. El mensaje DEBE incluir la sección de contratos con riesgo total real.
 
 Responde ÚNICAMENTE con este JSON (sin markdown, sin texto extra):
 {{
@@ -519,13 +578,19 @@ async def analyze_symbol(symbol: str):
     if not telegram_msg:
         now_et = datetime.now(ET).strftime("%H:%M ET")
         telegram_msg = (
-            f"📡 <b>SEÑAL {setup['direction_raw']}</b> — {symbol}\n"
+            f"📡 <b>SEÑAL {setup['direction_raw']}</b> — {setup['symbol']}\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"🕐 {now_et}\n"
-            f"💰 Entrada : <b>{setup['entry']}</b>\n"
+            f"💰 Entrada  : <b>{setup['entry']}</b>\n"
             f"🛑 Stop Loss: <b>{setup['stop_loss']}</b>\n"
             f"🎯 Target 1 : <b>{setup['target_1']}</b> (R/R 1:2)\n"
             f"🎯 Target 2 : <b>{setup['target_2']}</b> (R/R 1:3)\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📦 <b>TAMAÑO DE POSICIÓN</b>\n"
+            f"   Contratos : <b>{setup['contracts']}</b>\n"
+            f"   Riesgo/cto: ${setup['risk_per_contract']:.2f}  "
+            f"(${setup['point_value']}/pto × {setup['risk_points']} ptos)\n"
+            f"   Riesgo total: <b>${setup['total_risk']:.2f}</b> / máx $250\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"📊 EMA9: {setup['ema9']} | EMA20: {setup['ema20']}\n"
             f"📊 EMA200: {setup['ema200']} | VWAP: {setup['vwap']}\n"
